@@ -1,24 +1,23 @@
-from langchain.document_loaders import  PyPDFLoader
+from langchain.document_loaders import PyPDFLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_openai import OpenAIEmbeddings
 from langchain.vectorstores import FAISS
 from langchain_core.pydantic_v1 import BaseModel, Field
 from langchain import PromptTemplate
-import fitz
+from openai import RateLimitError
 from typing import List
 from rank_bm25 import BM25Okapi
+import fitz
 import asyncio
 import random
 import textwrap
 import numpy as np
-
-
-
+from enum import Enum
 
 
 def replace_t_with_space(list_of_documents):
     """
-    Replaces all tab characters ('\t') with spaces in the page content of each document.
+    Replaces all tab characters ('\t') with spaces in the page content of each document
 
     Args:
         list_of_documents: A list of document objects, each with a 'page_content' attribute.
@@ -44,8 +43,6 @@ def text_wrap(text, width=120):
         str: The wrapped text.
     """
     return textwrap.fill(text, width=width)
-
-
 
 
 def encode_pdf(path, chunk_size=1000, chunk_overlap=200):
@@ -78,6 +75,7 @@ def encode_pdf(path, chunk_size=1000, chunk_overlap=200):
 
     return vectorstore
 
+
 def encode_from_string(content, chunk_size=1000, chunk_overlap=200):
     """
     Encodes a string into a vector store using OpenAI embeddings.
@@ -94,7 +92,7 @@ def encode_from_string(content, chunk_size=1000, chunk_overlap=200):
         ValueError: If the input content is not valid.
         RuntimeError: If there is an error during the encoding process.
     """
-   
+
     if not isinstance(content, str) or not content.strip():
         raise ValueError("Content must be a non-empty string.")
 
@@ -148,8 +146,8 @@ def retrieve_context_per_question(question, chunks_query_retriever):
     # context = " ".join(doc.page_content for doc in docs)
     context = [doc.page_content for doc in docs]
 
-    
     return context
+
 
 class QuestionAnswerFromContext(BaseModel):
     """
@@ -160,8 +158,8 @@ class QuestionAnswerFromContext(BaseModel):
     """
     answer_based_on_content: str = Field(description="Generates an answer to a query based on a given context.")
 
-def create_question_answer_from_context_chain(llm):
 
+def create_question_answer_from_context_chain(llm):
     # Initialize the ChatOpenAI model with specific parameters
     question_answer_from_context_llm = llm
 
@@ -180,9 +178,9 @@ def create_question_answer_from_context_chain(llm):
     )
 
     # Create a chain by combining the prompt template and the language model
-    question_answer_from_context_cot_chain = question_answer_from_context_prompt | question_answer_from_context_llm.with_structured_output(QuestionAnswerFromContext)
+    question_answer_from_context_cot_chain = question_answer_from_context_prompt | question_answer_from_context_llm.with_structured_output(
+        QuestionAnswerFromContext)
     return question_answer_from_context_cot_chain
-
 
 
 def answer_question_from_context(question, context, question_answer_from_context_chain):
@@ -217,7 +215,7 @@ def show_context(context):
     Prints each context item in the list with a heading indicating its position.
     """
     for i, c in enumerate(context):
-        print(f"Context {i+1}:")
+        print(f"Context {i + 1}:")
         print(c)
         print("\n")
 
@@ -245,7 +243,6 @@ def read_pdf_to_string(path):
         # Extract the text content from the current page and append it to the content string
         content += page.get_text()
     return content
-
 
 
 def bm25_retrieval(bm25: BM25Okapi, cleaned_texts: List[str], query: str, k: int = 5) -> List[str]:
@@ -276,7 +273,6 @@ def bm25_retrieval(bm25: BM25Okapi, cleaned_texts: List[str], query: str, k: int
     return top_k_texts
 
 
-
 async def exponential_backoff(attempt):
     """
     Implements exponential backoff with a jitter.
@@ -290,9 +286,10 @@ async def exponential_backoff(attempt):
     # Calculate the wait time with exponential backoff and jitter
     wait_time = (2 ** attempt) + random.uniform(0, 1)
     print(f"Rate limit hit. Retrying in {wait_time:.2f} seconds...")
-    
+
     # Asynchronously sleep for the calculated wait time
     await asyncio.sleep(wait_time)
+
 
 async def retry_with_exponential_backoff(coroutine, max_retries=5):
     """
@@ -316,9 +313,50 @@ async def retry_with_exponential_backoff(coroutine, max_retries=5):
             # If the last attempt also fails, raise the exception
             if attempt == max_retries - 1:
                 raise e
-            
+
             # Wait for an exponential backoff period before retrying
             await exponential_backoff(attempt)
-    
+
     # If max retries are reached without success, raise an exception
     raise Exception("Max retries reached")
+
+
+# Enum class representing different embedding providers
+class EmbeddingProvider(Enum):
+    OPENAI = "openai"
+    COHERE = "cohere"
+    AMAZON_BEDROCK = "bedrock"
+
+# Enum class representing different model providers
+class ModelProvider(Enum):
+    OPENAI = "openai"
+    GROQ = "groq"
+    ANTHROPIC = "anthropic"
+    AMAZON_BEDROCK = "bedrock"
+
+
+def get_langchain_embedding_provider(provider: EmbeddingProvider, model_id: str = None):
+    """
+    Returns an embedding provider based on the specified provider and model ID.
+
+    Args:
+        provider (EmbeddingProvider): The embedding provider to use.
+        model_id (str): Optional -  The specific embeddings model ID to use .
+
+    Returns:
+        A LangChain embedding provider instance.
+
+    Raises:
+        ValueError: If the specified provider is not supported.
+    """
+    if provider == EmbeddingProvider.OPENAI:
+        from langchain_openai import OpenAIEmbeddings
+        return OpenAIEmbeddings()
+    elif provider == EmbeddingProvider.COHERE:
+        from langchain_cohere import CohereEmbeddings
+        return CohereEmbeddings()
+    elif provider == EmbeddingProvider.AMAZON_BEDROCK:
+        from langchain_community.embeddings import BedrockEmbeddings
+        return BedrockEmbeddings(model_id=model_id) if model_id else BedrockEmbeddings(model_id="amazon.titan-embed-text-v2:0")
+    else:
+        raise ValueError(f"Unsupported embedding provider: {provider}")
